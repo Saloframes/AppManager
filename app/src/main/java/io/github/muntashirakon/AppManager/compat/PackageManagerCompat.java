@@ -34,6 +34,7 @@ import android.content.pm.SuspendDialogInfo;
 import android.os.BadParcelableException;
 import android.os.Build;
 import android.os.DeadObjectException;
+import android.os.Parcelable;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserHandle;
@@ -49,6 +50,8 @@ import androidx.annotation.WorkerThread;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -122,6 +125,75 @@ public final class PackageManagerCompat {
 
     private static final int NEEDED_FLAGS = MATCH_UNINSTALLED_PACKAGES | MATCH_STATIC_SHARED_AND_SDK_LIBRARIES;
 
+    // Starting with Android 17 (Beta), IPackageManager#getInstalledPackages and
+    // #getInstalledApplications return PackageInfoList/ApplicationInfoList (subclasses of
+    // ParceledListSlice) instead of ParceledListSlice. Since the return type is part of the method
+    // descriptor at the bytecode level, calling these methods directly throws NoSuchMethodError on
+    // such platforms, leaving the app list empty. We therefore resolve and invoke them reflectively
+    // and read the list through the ParceledListSlice supertype.
+    @Nullable
+    private static final Method GET_INSTALLED_PACKAGES_METHOD = findInstalledMethod("getInstalledPackages");
+    @Nullable
+    private static final Method GET_INSTALLED_APPLICATIONS_METHOD = findInstalledMethod("getInstalledApplications");
+
+    @Nullable
+    private static Method findInstalledMethod(@NonNull String methodName) {
+        Class<?> flagsType = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ? long.class : int.class;
+        try {
+            Method method = IPackageManager.class.getMethod(methodName, flagsType, int.class);
+            method.setAccessible(true);
+            return method;
+        } catch (NoSuchMethodException | RuntimeException e) {
+            Log.w(TAG, "Could not resolve %s(%s, int)", e, methodName, flagsType.getName());
+            return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    @NonNull
+    private static <T extends Parcelable> List<T> invokeInstalledList(@Nullable Method method, @NonNull IPackageManager pm,
+                                                                      int flags, @UserIdInt int userId) throws RemoteException {
+        if (method == null) {
+            return Collections.emptyList();
+        }
+        Object flagsArg = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ? (Object) (long) flags : (Object) flags;
+        Object result;
+        try {
+            result = method.invoke(pm, flagsArg, userId);
+        } catch (IllegalAccessException e) {
+            throw new IllegalStateException(e);
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RemoteException) {
+                throw (RemoteException) cause;
+            }
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            if (cause instanceof Error) {
+                throw (Error) cause;
+            }
+            throw new IllegalStateException(cause != null ? cause : e);
+        }
+        if (result == null) {
+            return Collections.emptyList();
+        }
+        if (result instanceof ParceledListSlice) {
+            return ((ParceledListSlice<T>) result).getList();
+        }
+        // Fallback in case the returned subtype does not extend ParceledListSlice: read the list
+        // through the shared getList() method exposed by BaseParceledListSlice.
+        try {
+            Method getList = result.getClass().getMethod("getList");
+            getList.setAccessible(true);
+            Object list = getList.invoke(result);
+            return list != null ? (List<T>) list : Collections.emptyList();
+        } catch (ReflectiveOperationException e) {
+            Log.w(TAG, "Could not read list from %s", e, result.getClass().getName());
+            return Collections.emptyList();
+        }
+    }
+
     @WorkerThread
     @NonNull
     public static List<PackageInfo> getInstalledPackages(int flags, @UserIdInt int userId) {
@@ -166,15 +238,11 @@ public final class PackageManagerCompat {
         return packageInfoList;
     }
 
-    @SuppressWarnings("deprecation")
     private static List<PackageInfo> getInstalledPackagesInternal(@NonNull IPackageManager pm,
                                                                   int flags,
                                                                   @UserIdInt int userId) {
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                return pm.getInstalledPackages((long) flags, userId).getList();
-            }
-            return pm.getInstalledPackages(flags, userId).getList();
+            return invokeInstalledList(GET_INSTALLED_PACKAGES_METHOD, pm, flags, userId);
         } catch (RemoteException e) {
             return ExUtils.rethrowFromSystemServer(e);
         } catch (BadParcelableException e) {
@@ -189,15 +257,10 @@ public final class PackageManagerCompat {
         return getInstalledApplications(getPackageManager(), flags, userId);
     }
 
-    @SuppressLint("NewApi")
-    @SuppressWarnings("deprecation")
     @WorkerThread
     public static List<ApplicationInfo> getInstalledApplications(@NonNull IPackageManager pm, int flags,
                                                                  @UserIdInt int userId) throws RemoteException {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            return pm.getInstalledApplications((long) flags, userId).getList();
-        }
-        return pm.getInstalledApplications(flags, userId).getList();
+        return invokeInstalledList(GET_INSTALLED_APPLICATIONS_METHOD, pm, flags, userId);
     }
 
     @NonNull
