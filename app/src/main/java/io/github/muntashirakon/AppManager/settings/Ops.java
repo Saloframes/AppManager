@@ -285,6 +285,9 @@ public class Ops {
                         if (!Utils.isWifiActive(context.getApplicationContext())) {
                             throw new Exception("Wifi not enabled.");
                         }
+                        if (!AdbUtils.hasLocalNetworkPermission(context)) {
+                            return STATUS_WIRELESS_DEBUGGING_CHOOSER_REQUIRED;
+                        }
                         if (AdbUtils.enableWirelessDebugging(context)) {
                             // Wireless debugging enabled, try auto-connect
                             return STATUS_AUTO_CONNECT_WIRELESS_DEBUGGING;
@@ -724,6 +727,10 @@ public class Ops {
             throws IOException {
         if (!AdbUtils.isAdbdRunning()) {
             throw new IOException("ADB daemon not running.");
+        }
+        int tlsPort = AdbUtils.getAdbTlsPort();
+        if (tlsPort > 0) {
+            return tlsPort;
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             // Find ADB port only in Android 11 (R) or later

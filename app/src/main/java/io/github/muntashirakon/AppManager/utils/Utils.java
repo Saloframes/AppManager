@@ -17,6 +17,7 @@ import android.content.pm.PermissionInfo;
 import android.content.pm.ServiceInfo;
 import android.content.res.Configuration;
 import android.net.ConnectivityManager;
+import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import android.net.Uri;
@@ -643,7 +644,18 @@ public class Utils {
         ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             NetworkCapabilities capabilities = cm.getNetworkCapabilities(cm.getActiveNetwork());
-            return capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
+            if (capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                return true;
+            }
+            // The default network may be cellular even when Wi-Fi is connected (common on Android 17).
+            for (Network network : cm.getAllNetworks()) {
+                NetworkCapabilities networkCapabilities = cm.getNetworkCapabilities(network);
+                if (networkCapabilities != null
+                        && networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                    return true;
+                }
+            }
+            return false;
         }
         NetworkInfo info = cm.getActiveNetworkInfo();
         return info != null && info.getType() == ConnectivityManager.TYPE_WIFI;
