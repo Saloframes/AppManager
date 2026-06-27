@@ -53,7 +53,9 @@ public class AdbPairingService extends Service {
 
     private NotificationCompat.Builder mNotificationBuilder;
     private boolean mStartedSearching = false;
-    private AdbMdns mAdbMdnsPairing;
+    private LocalAdbMdns mAdbMdnsPairing;
+    @Nullable
+    private AdbMdnsMulticastLock mMulticastLock;
     private final MutableLiveData<Integer> mAdbPairingPort = new MutableLiveData<>();
     private final Observer<Integer> mAdbPairingPortObserver = port -> {
         Log.i(TAG, "Found port %d", port);
@@ -139,11 +141,14 @@ public class AdbPairingService extends Service {
         }
         mStartedSearching = true;
         if (mAdbMdnsPairing == null) {
-            mAdbMdnsPairing = new AdbMdns(getApplication(), AdbMdns.SERVICE_TYPE_TLS_PAIRING, (hostAddress, port) -> {
+            mAdbMdnsPairing = new LocalAdbMdns(getApplication(), AdbMdns.SERVICE_TYPE_TLS_PAIRING, (hostAddress, port) -> {
                 if (port != -1) {
                     mAdbPairingPort.postValue(port);
                 }
             });
+        }
+        if (mMulticastLock == null) {
+            mMulticastLock = new AdbMdnsMulticastLock(this);
         }
         mAdbPairingPort.observeForever(mAdbPairingPortObserver);
         PendingIntent stopPendingIntent = getStopIntent();
@@ -216,6 +221,10 @@ public class AdbPairingService extends Service {
         }
         mStartedSearching = false;
         mAdbMdnsPairing.stop();
+        if (mMulticastLock != null) {
+            mMulticastLock.close();
+            mMulticastLock = null;
+        }
         mAdbPairingPort.removeObserver(mAdbPairingPortObserver);
     }
 

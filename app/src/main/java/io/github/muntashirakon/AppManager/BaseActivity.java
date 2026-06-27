@@ -44,6 +44,9 @@ public abstract class BaseActivity extends PerProcessActivity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             put(Manifest.permission.POST_NOTIFICATIONS, false);
         }
+        if (Build.VERSION.SDK_INT >= 37) {
+            put(io.github.muntashirakon.AppManager.adb.AdbUtils.PERMISSION_ACCESS_LOCAL_NETWORK, false);
+        }
     }};
 
     public static final String EXTRA_AUTH = "auth";
