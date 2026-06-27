@@ -236,6 +236,34 @@ public class Ops {
         AppPref.set(AppPref.PrefKey.PREF_MODE_OF_OPS_STR, newMode);
     }
 
+    /**
+     * Whether the {@code ACCESS_LOCAL_NETWORK} runtime permission must be granted for the currently
+     * configured mode of operation.
+     * <p>
+     * Starting with Android 17 (API 37), apps must hold {@code ACCESS_LOCAL_NETWORK} to perform
+     * mDNS discovery and to open sockets to local-network addresses. The ADB over TCP and wireless
+     * debugging modes rely on mDNS to discover the ADB daemon/pairing ports, so the permission is
+     * required for those modes (and for auto mode when an ADB daemon is reachable). Loopback
+     * ({@code 127.0.0.1}) traffic itself is exempt, but the discovery step is not.
+     */
+    @AnyThread
+    @NoOps
+    public static boolean isLocalNetworkPermissionRequired() {
+        return isLocalNetworkPermissionRequired(getMode());
+    }
+
+    @AnyThread
+    @NoOps
+    public static boolean isLocalNetworkPermissionRequired(@NonNull String mode) {
+        if (Build.VERSION.SDK_INT < ManifestCompat.permission.ACCESS_LOCAL_NETWORK_SINCE) {
+            return false;
+        }
+        if (MODE_ADB_OVER_TCP.equals(mode) || MODE_ADB_WIFI.equals(mode)) {
+            return true;
+        }
+        return MODE_AUTO.equals(mode) && AdbUtils.isAdbdRunning();
+    }
+
     @WorkerThread
     @NoOps // Although we've used Ops checks, its overall usage does not affect anything
     @Status
