@@ -11,9 +11,6 @@
         android:required="false" />
 
     <uses-permission android:name="android.permission.ACCESS_HIDDEN_PROFILES" />
-    <!-- Required since Android 17 (API 37) to perform mDNS discovery and open sockets to
-         local-network addresses, which the ADB over TCP / wireless debugging flow relies on. -->
-    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission
         android:name="android.permission.ADJUST_RUNTIME_PERMISSIONS_POLICY"
