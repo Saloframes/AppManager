@@ -185,6 +185,7 @@ public final class PackageManagerCompat {
         // through the shared getList() method exposed by BaseParceledListSlice.
         try {
             Method getList = result.getClass().getMethod("getList");
+            getList.setAccessible(true);
             Object list = getList.invoke(result);
             return list != null ? (List<T>) list : Collections.emptyList();
         } catch (ReflectiveOperationException e) {
