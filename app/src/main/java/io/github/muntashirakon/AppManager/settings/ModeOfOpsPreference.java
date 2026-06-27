@@ -11,6 +11,8 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.DrawableRes;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -29,7 +31,9 @@ import java.util.Collections;
 import java.util.List;
 
 import io.github.muntashirakon.AppManager.R;
+import io.github.muntashirakon.AppManager.compat.ManifestCompat;
 import io.github.muntashirakon.AppManager.ipc.LocalServices;
+import io.github.muntashirakon.AppManager.self.SelfPermissions;
 import io.github.muntashirakon.AppManager.servermanager.LocalServer;
 import io.github.muntashirakon.AppManager.servermanager.ServerConfig;
 import io.github.muntashirakon.AppManager.users.Users;
@@ -57,6 +61,10 @@ public class ModeOfOpsPreference extends Fragment {
     private String[] mModes;
     @Ops.Mode
     private String mCurrentMode;
+    @Nullable
+    @Ops.Mode
+    private String mPendingMode;
+    private ActivityResultLauncher<String[]> mLocalNetworkPermissionLauncher;
     private boolean mConnecting;
     @Nullable
     private ColorStateList mColorActive;
@@ -75,6 +83,17 @@ public class ModeOfOpsPreference extends Fragment {
     public void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         mModel = new ViewModelProvider(requireActivity()).get(MainPreferencesViewModel.class);
+        mLocalNetworkPermissionLauncher = registerForActivityResult(
+                new ActivityResultContracts.RequestMultiplePermissions(),
+                result -> {
+                    // Proceed regardless of the grant result; the connection attempt will fall back
+                    // gracefully if the permission was denied.
+                    if (mPendingMode != null) {
+                        String mode = mPendingMode;
+                        mPendingMode = null;
+                        connectUsingMode(mode);
+                    }
+                });
     }
 
     @Nullable
@@ -119,15 +138,7 @@ public class ModeOfOpsPreference extends Fragment {
                 .addDisabledItems(disabledItems)
                 .setPositiveButton(R.string.apply, (dialog, which, selectedItem) -> {
                     if (selectedItem != null) {
-                        mCurrentMode = selectedItem;
-                        if (Ops.MODE_ADB_OVER_TCP.equals(mCurrentMode)) {
-                            ServerConfig.setAdbPort(ServerConfig.DEFAULT_ADB_PORT);
-                        }
-                        Ops.setMode(mCurrentMode);
-                        mModeOfOpsAlertDialog.show();
-                        mConnecting = true;
-                        updateViews();
-                        mModel.setModeOfOps();
+                        applySelectedMode(selectedItem);
                     }
                 })
                 .setNegativeButton(R.string.cancel, null)
@@ -187,6 +198,30 @@ public class ModeOfOpsPreference extends Fragment {
     public void onStart() {
         super.onStart();
         requireActivity().setTitle(R.string.pref_mode_of_operations);
+    }
+
+    private void applySelectedMode(@NonNull @Ops.Mode String selectedItem) {
+        if (Ops.isLocalNetworkPermissionRequired(selectedItem)
+                && !SelfPermissions.checkSelfPermission(ManifestCompat.permission.ACCESS_LOCAL_NETWORK)) {
+            // Android 17 (API 37) requires ACCESS_LOCAL_NETWORK for the mDNS discovery used by the
+            // ADB over TCP / wireless debugging modes. Request it before attempting to connect.
+            mPendingMode = selectedItem;
+            mLocalNetworkPermissionLauncher.launch(new String[]{ManifestCompat.permission.ACCESS_LOCAL_NETWORK});
+            return;
+        }
+        connectUsingMode(selectedItem);
+    }
+
+    private void connectUsingMode(@NonNull @Ops.Mode String selectedItem) {
+        mCurrentMode = selectedItem;
+        if (Ops.MODE_ADB_OVER_TCP.equals(mCurrentMode)) {
+            ServerConfig.setAdbPort(ServerConfig.DEFAULT_ADB_PORT);
+        }
+        Ops.setMode(mCurrentMode);
+        mModeOfOpsAlertDialog.show();
+        mConnecting = true;
+        updateViews();
+        mModel.setModeOfOps();
     }
 
     private void updateViews() {
