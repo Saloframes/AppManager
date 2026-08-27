@@ -195,7 +195,17 @@ dependencies {
     testImplementation "org.robolectric:robolectric:${robolectric_version}"
 }
 
-preBuild.dependsOn ":server:build"
+android.applicationVariants.configureEach { variant ->
+    String buildTypeCap = variant.buildType.name.capitalize()
+    tasks.named("merge${buildTypeCap}Assets").configure { mergeTask ->
+        mergeTask.dependsOn(":server:create${buildTypeCap}ServerJars")
+    }
+    tasks.matching {
+        it.name == "generate${buildTypeCap}LintReportModel" || it.name == "lintAnalyze${buildTypeCap}"
+    }.configureEach {
+        dependsOn(":server:create${buildTypeCap}ServerJars")
+    }
+}
 
 def buildTime() {
     var commitTime = "git show --no-patch --format=%ct000".execute([], project.rootDir).text.trim()
