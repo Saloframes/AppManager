@@ -24,6 +24,7 @@ import java.util.HashMap;
 import java.util.List;
 
 import io.github.muntashirakon.AppManager.compat.BiometricAuthenticatorsCompat;
+import io.github.muntashirakon.AppManager.compat.ManifestCompat;
 import io.github.muntashirakon.AppManager.crypto.auth.AuthManager;
 import io.github.muntashirakon.AppManager.crypto.ks.KeyStoreActivity;
 import io.github.muntashirakon.AppManager.crypto.ks.KeyStoreManager;
@@ -237,12 +238,19 @@ public abstract class BaseActivity extends PerProcessActivity {
     }
 
     private boolean initPermissionChecks(boolean checkAll) {
-        List<String> permissionsToBeAsked = new ArrayList<>(ASKED_PERMISSIONS.size());
+        List<String> permissionsToBeAsked = new ArrayList<>(ASKED_PERMISSIONS.size() + 1);
         for (String permission : ASKED_PERMISSIONS.keySet()) {
             boolean required = Boolean.TRUE.equals(ASKED_PERMISSIONS.get(permission));
             if (!SelfPermissions.checkSelfPermission(permission) && (required || checkAll)) {
                 permissionsToBeAsked.add(permission);
             }
+        }
+        // Android 17 (API 37) gates local network access (mDNS discovery + LAN sockets) used by the
+        // ADB over TCP / wireless debugging modes behind the ACCESS_LOCAL_NETWORK runtime permission.
+        // Request it up-front so the connection attempt during mode initialization can succeed.
+        if (checkAll && Ops.isLocalNetworkPermissionRequired()
+                && !SelfPermissions.checkSelfPermission(ManifestCompat.permission.ACCESS_LOCAL_NETWORK)) {
+            permissionsToBeAsked.add(ManifestCompat.permission.ACCESS_LOCAL_NETWORK);
         }
         if (!permissionsToBeAsked.isEmpty()) {
             // Ask required permissions

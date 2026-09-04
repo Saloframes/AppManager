@@ -10,6 +10,13 @@ public final class ManifestCompat {
     public static final class permission {
         public static final String TERMUX_RUN_COMMAND = "com.termux.permission.RUN_COMMAND";
 
+        // The ACCESS_LOCAL_NETWORK runtime permission was introduced in Android 17 (API 37).
+        // Build.VERSION_CODES has no constant for it when compiling against an older SDK, so the
+        // raw API level is used here. The permission name itself is just a String and is safe to
+        // reference on any API level; access is gated at runtime via ACCESS_LOCAL_NETWORK_SINCE.
+        public static final int ACCESS_LOCAL_NETWORK_SINCE = 37;
+        public static final String ACCESS_LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK";
+
         @RequiresApi(Build.VERSION_CODES.Q)
         public static final String ADJUST_RUNTIME_PERMISSIONS_POLICY = "android.permission.ADJUST_RUNTIME_PERMISSIONS_POLICY";
         public static final String BACKUP = "android.permission.BACKUP";
