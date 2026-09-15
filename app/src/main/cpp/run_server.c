@@ -251,6 +251,17 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
+    // Detach from shell
+    int null_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
+    if (null_fd >= 0) {
+        dup2(null_fd, STDIN_FILENO);
+        dup2(null_fd, STDOUT_FILENO);
+        dup2(null_fd, STDERR_FILENO);
+        if (null_fd > STDERR_FILENO) {
+            close(null_fd);
+        }
+    }
+
     // Execute local server
     execv("/system/bin/app_process", exec_argv);
 

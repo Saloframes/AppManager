@@ -22,12 +22,13 @@ import io.github.muntashirakon.AppManager.logs.Log;
 import io.github.muntashirakon.AppManager.self.Migrations;
 import io.github.muntashirakon.AppManager.utils.AppPref;
 import io.github.muntashirakon.AppManager.utils.ThreadUtils;
+import io.github.muntashirakon.lifecycle.SingleLiveEvent;
 
 public class SecurityAndOpsViewModel extends AndroidViewModel implements Ops.AdbConnectionInterface {
     public static final String TAG = SecurityAndOpsViewModel.class.getSimpleName();
 
     private boolean mIsAuthenticating = false;
-    private final MutableLiveData<Integer> mAuthenticationStatus = new MutableLiveData<>();
+    private final MutableLiveData<Integer> mAuthenticationStatus = new SingleLiveEvent<>();
     private final ExecutorService mExecutor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean mOperationPending = new AtomicBoolean(false);
 

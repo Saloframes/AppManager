@@ -2,8 +2,6 @@
 
 package io.github.muntashirakon.AppManager.server.common;
 
-import android.util.Log;
-
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
@@ -22,6 +20,7 @@ import java.util.Objects;
  */
 // Copyright 2017 Zheng Li
 public final class DataTransmission implements Closeable {
+    private static final int MAX_MESSAGE_SIZE = 16 * 1024 * 1024;
     /**
      * Protocol version. Specification: <code>protocol-version,token</code>
      */
@@ -116,6 +115,9 @@ public final class DataTransmission implements Closeable {
      */
     public void sendMessage(@Nullable byte[] messageBytes) throws IOException {
         if (messageBytes != null) {
+            if (messageBytes.length > MAX_MESSAGE_SIZE) {
+                throw new IOException("Message is too large: " + messageBytes.length);
+            }
             mOutputStream.writeInt(messageBytes.length);
             mOutputStream.write(messageBytes);
             mOutputStream.flush();
@@ -131,6 +133,9 @@ public final class DataTransmission implements Closeable {
     @NonNull
     private byte[] readMessage() throws IOException {
         int len = mInputStream.readInt();
+        if (len < 0 || len > MAX_MESSAGE_SIZE) {
+            throw new IOException("Invalid message length: " + len);
+        }
         byte[] bytes = new byte[len];
         mInputStream.readFully(bytes, 0, len);
         return bytes;
@@ -162,7 +167,7 @@ public final class DataTransmission implements Closeable {
     public void shakeHands(@NonNull String token, Role role) throws IOException {
         Objects.requireNonNull(token);
         if (role == Role.Client) {
-            Log.i("DataTransmission", "shakeHands: Client protocol: " + PROTOCOL_VERSION);
+            FLog.log("DataTransmission#shakeHands: Client protocol: " + PROTOCOL_VERSION);
             // Send protocol version and client challenge (Nonce_C)
             sendMessage(PROTOCOL_VERSION.getBytes(StandardCharsets.UTF_8));
             byte[] nonceC = AuthUtils.generateNonce();
@@ -175,7 +180,7 @@ public final class DataTransmission implements Closeable {
             // Validate server (HMAC_S == HMAC(token, Nonce_C)?)
             byte[] expectedServerHmac = AuthUtils.calculateHmac(token, nonceC);
             if (!MessageDigest.isEqual(serverHmac, expectedServerHmac)) {
-                Log.e("DataTransmission", "shakeHands: Rogue server detected! Connection dropped.");
+                FLog.log("DataTransmission#shakeHands: Rogue server detected! Connection dropped.");
                 throw new IOException("Unauthorized server: HMAC mismatch.");
             }
 

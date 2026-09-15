@@ -150,6 +150,11 @@ public abstract class ListOptions extends CapsuleBottomSheetDialogFragment {
     }
 
     private void init(boolean reinit) {
+        if (reinit) {
+            mSortGroup.removeAllViews();
+            mFilterOptions.removeAllViews();
+            mOptionsView.removeAllViews();
+        }
         // Enable sorting
         LinkedHashMap<Integer, Integer> sortIdLocaleMap = getSortIdLocaleMap();
         boolean sortingEnabled = sortIdLocaleMap != null;

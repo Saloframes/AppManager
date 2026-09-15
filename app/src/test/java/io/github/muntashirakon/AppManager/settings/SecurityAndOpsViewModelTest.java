@@ -5,8 +5,10 @@ package io.github.muntashirakon.AppManager.settings;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
-import android.app.Application;
 import android.content.Context;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import org.junit.After;
 import org.junit.Before;
@@ -20,6 +22,12 @@ import org.robolectric.annotation.Implements;
 import org.robolectric.annotation.LooperMode;
 import org.robolectric.shadows.ShadowLooper;
 
+import androidx.lifecycle.Lifecycle;
+import androidx.lifecycle.LifecycleOwner;
+import androidx.lifecycle.LifecycleRegistry;
+
+import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -80,6 +88,86 @@ public class SecurityAndOpsViewModelTest {
         assertTrue(ShadowOps.operationInterrupted.await(5, TimeUnit.SECONDS));
     }
 
+    @Test
+    public void operationStatusesAreNotReplayedAfterActivityRecreation() {
+        List<Integer> statuses = Arrays.asList(
+                Ops.STATUS_SUCCESS,
+                Ops.STATUS_FAILURE,
+                Ops.STATUS_AUTO_CONNECT_WIRELESS_DEBUGGING,
+                Ops.STATUS_WIRELESS_DEBUGGING_CHOOSER_REQUIRED,
+                Ops.STATUS_ADB_PAIRING_REQUIRED,
+                Ops.STATUS_ADB_CONNECT_REQUIRED,
+                Ops.STATUS_FAILURE_ADB_NEED_MORE_PERMS
+        );
+
+        AtomicInteger firstObserverCalls = new AtomicInteger();
+        AtomicInteger recreatedObserverCalls = new AtomicInteger();
+        androidx.lifecycle.Observer<Integer> firstObserver = status -> firstObserverCalls.incrementAndGet();
+        androidx.lifecycle.Observer<Integer> recreatedObserver = status -> recreatedObserverCalls.incrementAndGet();
+
+        TestLifecycleOwner firstOwner = new TestLifecycleOwner();
+        firstOwner.start();
+        mViewModel.authenticationStatus().observe(firstOwner, firstObserver);
+        for (Integer status : statuses) {
+            mViewModel.onStatusReceived(status);
+            ShadowLooper.idleMainLooper();
+        }
+        firstOwner.destroy();
+
+        // A recreated Activity must wait for a new transition. Replaying the last command can
+        // reopen a dialog, retry ADB, or repeat terminal navigation.
+        TestLifecycleOwner recreatedOwner = new TestLifecycleOwner();
+        recreatedOwner.start();
+        mViewModel.authenticationStatus().observe(recreatedOwner, recreatedObserver);
+
+        assertEquals(statuses.size(), firstObserverCalls.get());
+        assertEquals(0, recreatedObserverCalls.get());
+        recreatedOwner.destroy();
+    }
+
+    @Test
+    public void statusEmittedWhileActivityIsStoppedIsDeliveredOnceAfterRecreation() {
+        AtomicInteger recreatedObserverCalls = new AtomicInteger();
+        androidx.lifecycle.Observer<Integer> recreatedObserver = status -> recreatedObserverCalls.incrementAndGet();
+
+        // No active Activity observer exists when the backend finishes.
+        mViewModel.onStatusReceived(Ops.STATUS_SUCCESS);
+        ShadowLooper.idleMainLooper();
+
+        TestLifecycleOwner recreatedOwner = new TestLifecycleOwner();
+        recreatedOwner.start();
+        mViewModel.authenticationStatus().observe(recreatedOwner, recreatedObserver);
+        assertEquals(1, recreatedObserverCalls.get());
+        recreatedOwner.destroy();
+
+        // Recreating again must not process the same terminal transition twice.
+        androidx.lifecycle.Observer<Integer> secondRecreatedObserver = status -> recreatedObserverCalls.incrementAndGet();
+        TestLifecycleOwner secondRecreatedOwner = new TestLifecycleOwner();
+        secondRecreatedOwner.start();
+        mViewModel.authenticationStatus().observe(secondRecreatedOwner, secondRecreatedObserver);
+        assertEquals(1, recreatedObserverCalls.get());
+        secondRecreatedOwner.destroy();
+    }
+
+    private static class TestLifecycleOwner implements LifecycleOwner {
+        private final LifecycleRegistry mLifecycle = new LifecycleRegistry(this);
+
+        @NonNull
+        @Override
+        public Lifecycle getLifecycle() {
+            return mLifecycle;
+        }
+
+        void start() {
+            mLifecycle.handleLifecycleEvent(Lifecycle.Event.ON_START);
+        }
+
+        void destroy() {
+            mLifecycle.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY);
+        }
+    }
+
+    @Nullable
     private Integer awaitStatus() throws InterruptedException {
         for (int i = 0; i < 100; ++i) {
             ShadowLooper.idleMainLooper();

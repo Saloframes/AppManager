@@ -12,6 +12,7 @@ import android.content.res.Resources;
 import android.os.Build;
 import android.os.Process;
 import android.os.RemoteException;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.Editable;
 import android.text.TextUtils;
@@ -23,6 +24,7 @@ import androidx.annotation.GuardedBy;
 import androidx.annotation.IntDef;
 import androidx.annotation.MainThread;
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 import androidx.annotation.StringDef;
 import androidx.annotation.UiThread;
@@ -54,6 +56,8 @@ import io.github.muntashirakon.AppManager.runner.RunnerUtils;
 import io.github.muntashirakon.AppManager.self.SelfPermissions;
 import io.github.muntashirakon.AppManager.servermanager.LocalServer;
 import io.github.muntashirakon.AppManager.servermanager.ServerConfig;
+import io.github.muntashirakon.AppManager.servermanager.ServerConnectionFailure;
+import io.github.muntashirakon.AppManager.servermanager.ServerStatusChangeReceiver;
 import io.github.muntashirakon.AppManager.servermanager.WifiWaitService;
 import io.github.muntashirakon.AppManager.session.SessionMonitoringService;
 import io.github.muntashirakon.AppManager.users.Owners;
@@ -95,6 +99,10 @@ public class Ops {
             STATUS_ADB_PAIRING_REQUIRED,
             STATUS_ADB_CONNECT_REQUIRED,
             STATUS_FAILURE_ADB_NEED_MORE_PERMS,
+            STATUS_FAILURE_SERVER_PROTOCOL,
+            STATUS_FAILURE_SERVER_AUTHENTICATION,
+            STATUS_FAILURE_SERVER_UNRESPONSIVE,
+            STATUS_FAILURE_SERVER_START,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface Status {
@@ -107,6 +115,10 @@ public class Ops {
     public static final int STATUS_ADB_PAIRING_REQUIRED = 4;
     public static final int STATUS_ADB_CONNECT_REQUIRED = 5;
     public static final int STATUS_FAILURE_ADB_NEED_MORE_PERMS = 6;
+    public static final int STATUS_FAILURE_SERVER_PROTOCOL = 7;
+    public static final int STATUS_FAILURE_SERVER_AUTHENTICATION = 8;
+    public static final int STATUS_FAILURE_SERVER_UNRESPONSIVE = 9;
+    public static final int STATUS_FAILURE_SERVER_START = 10;
 
     public static int ROOT_UID = 0;
     public static int SHELL_UID = 2000;
@@ -136,6 +148,16 @@ public class Ops {
     @AnyThread
     public static void setWorkingUid(int newUid) {
         sWorkingUid = newUid;
+    }
+
+    /**
+     * Clears states after a binder or server disconnect.
+     */
+    @AnyThread
+    public static void invalidateRuntimeBackend() {
+        sDirectRoot = false;
+        sIsAdb = sIsSystem = sIsRoot = false;
+        setWorkingUid(Process.myUid());
     }
 
     @AnyThread
@@ -315,9 +337,9 @@ public class Ops {
                     if (!sDirectRoot) {
                         throw new Exception("Root is unavailable.");
                     }
-                    // Disable server first
+                    // Disable remote server first
                     ExUtils.exceptionAsIgnored(() -> {
-                        if (LocalServer.alive(context)) {
+                        if (LocalServer.checkServerHealth(context)) {
                             LocalServer.getInstance().closeBgServer();
                         }
                     });
@@ -333,6 +355,10 @@ public class Ops {
                     sIsRoot = sIsSystem = false;
                     sIsAdb = true;
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        if (reuseRunningAdbServer(context)) {
+                            LocalServices.bindServicesIfNotAlready();
+                            return checkRootOrIncompleteUsbDebuggingInAdb(context);
+                        }
                         if (!AdbUtils.isWifiConnected(context)) {
                             throw new Exception("Wifi not enabled.");
                         }
@@ -348,9 +374,12 @@ public class Ops {
                     sDirectRoot = false;
                     sIsRoot = sIsSystem = false;
                     sIsAdb = true;
-                    ServerConfig.setAdbPort(findAdbPort(context, 10, AdbUtils.getAdbPortOrDefault()));
-                    LocalServer.restart();
-                    LocalServices.bindServicesIfNotAlready();
+                    if (reuseRunningAdbServer(context)) {
+                        LocalServices.bindServicesIfNotAlready();
+                        return checkRootOrIncompleteUsbDebuggingInAdb(context);
+                    }
+                    int port = findAdbPort(context, 10, AdbUtils.getAdbPortOrDefault());
+                    connectAdbFull(port);
                     return checkRootOrIncompleteUsbDebuggingInAdb(context);
             }
         } catch (Throwable e) {
@@ -381,7 +410,7 @@ public class Ops {
             // Root permission was granted
             // Disable remote server
             ExUtils.exceptionAsIgnored(() -> {
-                if (LocalServer.alive(context)) {
+                if (LocalServer.checkServerHealth(context)) {
                     LocalServer.getInstance().closeBgServer();
                 }
             });
@@ -418,6 +447,22 @@ public class Ops {
             sDirectRoot = false;
             sIsRoot = false;
             // Fall-through, in case we can use other options
+        } else {
+            try {
+                if (reuseRunningAdbServer(context)) {
+                    sIsAdb = true;
+                    sIsSystem = sIsRoot = false;
+                    LocalServices.bindServicesIfNotAlready();
+                    int status = checkRootOrIncompleteUsbDebuggingInAdb(context);
+                    if (status == STATUS_SUCCESS) {
+                        setMode(MODE_ADB_OVER_TCP);
+                        return;
+                    }
+                }
+            } catch (IOException | AdbPairingRequiredException | RemoteException e) {
+                Log.e(TAG, "Could not reuse the persistent ADB server", e);
+            }
+            // Fall-through, again
         }
         // Root was not working/granted, but check for AM service just in case
         if (LocalServices.alive()) {
@@ -462,9 +507,7 @@ public class Ops {
         }
         sIsAdb = true; // First enable ADB if not already
         try {
-            ServerConfig.setAdbPort(findAdbPort(context, 7, ServerConfig.getAdbPort()));
-            LocalServer.restart();
-            LocalServices.bindServicesIfNotAlready();
+            connectAdbFull(findAdbPort(context, 7, ServerConfig.getAdbPort()));
         } catch (Throwable e) {
             Log.e(TAG, e);
         }
@@ -524,6 +567,11 @@ public class Ops {
         sIsAdb = true;
         sIsSystem = sIsRoot = false;
         try {
+            if (LocalServer.checkServerHealth(context)) {
+                LocalServer.getInstance();
+                LocalServices.bindServicesIfNotAlready();
+                return checkRootOrIncompleteUsbDebuggingInAdb(context);
+            }
             ServerConfig.setAdbPort(findAdbPort(context, 5, ServerConfig.getAdbPort()));
             LocalServer.restart();
             LocalServices.bindServicesIfNotAlready();
@@ -534,7 +582,7 @@ public class Ops {
             if (e instanceof AdbPairingRequiredException) {
                 // Only pairing is required
                 return STATUS_ADB_PAIRING_REQUIRED;
-            } else return STATUS_WIRELESS_DEBUGGING_CHOOSER_REQUIRED;
+            } else return getServerFailureStatus(e, STATUS_FAILURE);
         }
     }
 
@@ -559,15 +607,57 @@ public class Ops {
         sIsAdb = true;
         sIsSystem = sIsRoot = false;
         try {
-            ServerConfig.setAdbPort(port);
-            LocalServer.restart();
-            LocalServices.bindServicesIfNotAlready();
+            connectAdbFull(port);
             return checkRootOrIncompleteUsbDebuggingInAdb(context);
         } catch (RemoteException | IOException | AdbPairingRequiredException | RuntimeException e) {
             Log.e(TAG, "Could not connect to adbd using port " + port, e);
             fallbackToNoRoot(context);
-            return returnCodeOnFailure;
+            return getServerFailureStatus(e, returnCodeOnFailure);
         }
+    }
+
+    @Status
+    private static int getServerFailureStatus(@NonNull Throwable failure, @Status int fallback) {
+        if (!(failure instanceof ServerConnectionFailure)) return fallback;
+        switch (((ServerConnectionFailure) failure).getReason()) {
+            case PROTOCOL_MISMATCH:
+                return STATUS_FAILURE_SERVER_PROTOCOL;
+            case AUTHENTICATION:
+                return STATUS_FAILURE_SERVER_AUTHENTICATION;
+            case SERVER_UNRESPONSIVE:
+                return STATUS_FAILURE_SERVER_UNRESPONSIVE;
+            case SERVER_START:
+                return STATUS_FAILURE_SERVER_START;
+            case TRANSPORT:
+            default:
+                return fallback;
+        }
+    }
+
+    /**
+     * Restart/reuse the local server, authenticate the session, and bind both remote services.
+     */
+    @WorkerThread
+    private static void connectAdbFull(int adbPort)
+            throws IOException, AdbPairingRequiredException, RemoteException {
+        ServerConfig.setAdbPort(adbPort);
+        if (!reuseRunningAdbServer(ContextUtils.getContext())) {
+            LocalServer.restart();
+        }
+        LocalServices.bindServicesIfNotAlready();
+    }
+
+    /**
+     * Reuse the persistent ADB server when it is already healthy.
+     */
+    @WorkerThread
+    private static boolean reuseRunningAdbServer(@NonNull Context context)
+            throws IOException, AdbPairingRequiredException {
+        if (!LocalServer.checkServerHealth(context)) {
+            return false;
+        }
+        LocalServer.getInstance();
+        return true;
     }
 
     @UiThread
@@ -638,9 +728,7 @@ public class Ops {
                 .setTitle(R.string.adb_pairing_title)
                 .setMessage(R.string.adb_pairing_instruction)
                 .setCancelable(false)
-                .setNeutralButton(R.string.action_manual, (dialog, which) -> {
-                    startAdbPairing(activity, callback);
-                })
+                .setNeutralButton(R.string.action_manual, (dialog, which) -> startAdbPairing(activity, callback))
                 .setNegativeButton(R.string.cancel, (dialog, which) -> callback.connectAdb(-1))
                 .setPositiveButton(R.string.go, (dialog, which) -> {
                     Intent developerOptionsIntent = new Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
@@ -672,13 +760,13 @@ public class Ops {
         return Utils.canDisplayNotification(context) && !Utils.isVrHeadset(context);
     }
 
+    @RequiresApi(Build.VERSION_CODES.R)
     static boolean isMultiWindowPairingAvailable(@NonNull FragmentActivity activity) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && activity.isInMultiWindowMode()) {
+        if (activity.isInMultiWindowMode()) {
             return true;
         }
         PackageManager packageManager = activity.getPackageManager();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
-                && packageManager.hasSystemFeature(PackageManager.FEATURE_FREEFORM_WINDOW_MANAGEMENT)) {
+        if (packageManager.hasSystemFeature(PackageManager.FEATURE_FREEFORM_WINDOW_MANAGEMENT)) {
             return true;
         }
         // Use system resource
@@ -691,8 +779,7 @@ public class Ops {
     @UiThread
     private static void showMultiWindowPairingInstructions(@NonNull FragmentActivity activity,
                                                            @NonNull AdbConnectionInterface callback) {
-        boolean alreadyInMultiWindow = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
-                && activity.isInMultiWindowMode();
+        boolean alreadyInMultiWindow = activity.isInMultiWindowMode();
         MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(activity)
                 .setTitle(R.string.adb_pairing_split_screen_title)
                 .setMessage(alreadyInMultiWindow
@@ -844,11 +931,13 @@ public class Ops {
         }
     }
 
+    @WorkerThread
+    @NoOps
+    @RequiresApi(Build.VERSION_CODES.R)
     @Status
     private static int pairAdbLocked(@NonNull Context context) {
         AdbConnectionManager.PairingSession session = null;
         try {
-            AdbConnectionManager conn = AdbConnectionManager.getInstance();
             session = AdbConnectionManager.getPairingSession();
             if (session == null) {
                 session = AdbConnectionManager.beginPairingSession();
@@ -882,10 +971,10 @@ public class Ops {
     @Status
     private static int pairAdbInternal(@NonNull Context context,
                                        @NonNull AdbConnectionManager.PairingSession session) {
-        long deadline = android.os.SystemClock.elapsedRealtime() + TimeUnit.MINUTES.toMillis(10);
+        long deadline = SystemClock.elapsedRealtime() + TimeUnit.MINUTES.toMillis(10);
         try {
             while (true) {
-                long remaining = deadline - android.os.SystemClock.elapsedRealtime();
+                long remaining = deadline - SystemClock.elapsedRealtime();
                 if (remaining <= 0) {
                     break;
                 }
@@ -911,7 +1000,8 @@ public class Ops {
     }
 
     @UiThread
-    public static void displayIncompleteUsbDebuggingMessage(@NonNull FragmentActivity activity) {
+    public static void displayIncompleteUsbDebuggingMessage(@NonNull FragmentActivity activity,
+                                                            @Nullable Runnable onDismiss) {
         new ScrollableDialogBuilder(activity)
                 .setTitle(R.string.adb_incomplete_usb_debugging_title)
                 .setMessage(R.string.adb_incomplete_usb_debugging_message)
@@ -924,6 +1014,9 @@ public class Ops {
                         activity.startActivity(intent);
                     } catch (Throwable ignore) {
                     }
+                })
+                .setOnDismissListener(dialog -> {
+                    if (onDismiss != null) onDismiss.run();
                 })
                 .show();
     }
@@ -943,12 +1036,13 @@ public class Ops {
         sIsRoot = MODE_ROOT.equals(mode);
         sIsAdb = !sIsRoot; // Because the rests are ADB
         sIsSystem = false;
-        if (LocalServer.alive(context)) {
-            // Remote server is running, but local server may not be running
+        if (LocalServer.checkServerHealth(context)) {
+            // A healthy authenticated server can be reused after an app relaunch.
             try {
                 LocalServer.getInstance();
                 LocalServices.bindServicesIfNotAlready();
-            } catch (RemoteException | IOException | AdbPairingRequiredException | RuntimeException e) {
+            } catch (RemoteException | IOException | AdbPairingRequiredException |
+                     RuntimeException e) {
                 Log.e(TAG, e);
                 // fall-through, because the remote service may still be alive
             }
@@ -1012,12 +1106,12 @@ public class Ops {
     static void fallbackToNoRoot(@NonNull Context context) {
         sTransitionLock.lock();
         try {
+            // Clear any pending SERVER_STARTED broadcast
+            ServerStatusChangeReceiver.cancelPendingServerStart();
             if (LocalServices.alive()) {
                 LocalServices.stopServices();
             }
-            if (LocalServer.alive(context)) {
-                ExUtils.exceptionAsIgnored(() -> LocalServer.getInstance().closeBgServer());
-            }
+            // Do not stop the remote server here.
             sDirectRoot = false;
             sIsAdb = sIsSystem = sIsRoot = false;
             setWorkingUid(Process.myUid());

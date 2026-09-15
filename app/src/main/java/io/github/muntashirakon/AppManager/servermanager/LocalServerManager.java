@@ -12,6 +12,7 @@ import androidx.annotation.Nullable;
 import androidx.annotation.WorkerThread;
 
 import java.io.BufferedReader;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -43,6 +44,8 @@ import io.github.muntashirakon.io.IoUtils;
 // Copyright 2016 Zheng Li
 class LocalServerManager {
     private static final String TAG = "LocalServerManager";
+    private static final int MAX_SERVER_START_ATTEMPTS = 2;
+    private static final long SERVER_RETRY_DELAY_MILLIS = 150;
 
     @SuppressLint("StaticFieldLeak")
     private static LocalServerManager sLocalServerManager;
@@ -87,28 +90,52 @@ class LocalServerManager {
                     mSession = createSession();
                 } catch (SocketTimeoutException e) {
                     Log.i(TAG, "Server is running but not responsive. Stopping the server...");
+                    closeSession();
                     try {
                         stopServer();
                     } catch (Exception ex) {
-                        throw new IOException(ex);
+                        Log.w(TAG, "Could not stop the unresponsive server, continuing recovery", ex);
                     }
-                    // Successfully stopped the server.
-                    // We try to start server again below.
                 } catch (Exception e) {
+                    closeSession();
                     if (!Ops.isDirectRoot() && !Ops.isAdb()) {
                         // Do not bother attempting to create a new session
-                        throw new IOException("Could not create session", e);
+                        throw ServerConnectionFailure.from(e, false);
                     }
                 }
                 if (mSession == null) {
-                    try {
-                        startServer();
-                    } catch (AdbPairingRequiredException e) {
-                        throw e;
-                    } catch (Exception e) {
-                        throw new IOException("Could not start server", e);
+                    ServerConnectionFailure lastFailure = null;
+                    for (int attempt = 1; attempt <= MAX_SERVER_START_ATTEMPTS; ++attempt) {
+                        try {
+                            startServer();
+                        } catch (AdbPairingRequiredException e) {
+                            throw e;
+                        } catch (Exception e) {
+                            lastFailure = ServerConnectionFailure.from(e, true);
+                            closeSession();
+                            Log.w(TAG, "Server start/handshake attempt %d/%d failed",
+                                    attempt, MAX_SERVER_START_ATTEMPTS, e);
+                            if (attempt < MAX_SERVER_START_ATTEMPTS) {
+                                SystemClock.sleep(SERVER_RETRY_DELAY_MILLIS);
+                            }
+                            continue;
+                        }
+                        try {
+                            mSession = createSession();
+                            return mSession;
+                        } catch (Exception e) {
+                            lastFailure = ServerConnectionFailure.from(e, false);
+                            closeSession();
+                            Log.w(TAG, "Server handshake attempt %d/%d failed",
+                                    attempt, MAX_SERVER_START_ATTEMPTS, e);
+                            if (attempt < MAX_SERVER_START_ATTEMPTS) {
+                                SystemClock.sleep(SERVER_RETRY_DELAY_MILLIS);
+                            }
+                        }
                     }
-                    mSession = createSession();
+                    throw new ServerConnectionFailure("Could not start server after "
+                            + MAX_SERVER_START_ATTEMPTS + " attempts ("
+                            + lastFailure.getReason() + ")", lastFailure.getReason(), lastFailure);
                 }
             }
             return mSession;
@@ -118,6 +145,24 @@ class LocalServerManager {
     @AnyThread
     public boolean isRunning() {
         return mSession != null && mSession.isRunning();
+    }
+
+    @WorkerThread
+    boolean checkServerHealth() {
+        synchronized (mLock) {
+            if (mSession != null && mSession.isRunning()) {
+                return true;
+            }
+            closeSession();
+            try {
+                mSession = createSession();
+                return true;
+            } catch (IOException e) {
+                closeSession();
+                Log.d(TAG, "Server health check failed: %s", e.getMessage());
+                return false;
+            }
+        }
     }
 
     /**
@@ -180,10 +225,17 @@ class LocalServerManager {
             getSession().getDataTransmission().sendAndReceiveMessage(ParcelableUtil.marshall(baseCaller));
         } catch (Exception e) {
             // Since the server is closed abruptly, this should always produce error
-            Log.w(TAG, "closeBgServer: Error", e);
+            if (isExpectedDisconnect(e)) {
+                Log.d(TAG, "closeBgServer: server session already disconnected");
+            } else {
+                Log.w(TAG, "closeBgServer: Error", e);
+            }
         }
+        // The close command terminates the server-side client loop. Do not retain the old
+        // session while checking whether the server is still accepting connections.
+        closeSession();
         // Check if the server is still active
-        if (LocalServer.alive(mContext)) {
+        if (LocalServer.checkServerHealth(mContext)) {
             // Server still active, need to run killall am_local_server
             try {
                 stopServer();
@@ -191,6 +243,15 @@ class LocalServerManager {
                 throw new IOException(e);
             }
         }
+    }
+
+    private static boolean isExpectedDisconnect(@NonNull Throwable error) {
+        return error instanceof EOFException
+                || error instanceof SocketTimeoutException
+                || (error instanceof java.net.SocketException
+                && (error.getMessage() == null
+                || error.getMessage().contains("closed")
+                || error.getMessage().contains("Broken pipe")));
     }
 
     @WorkerThread

@@ -61,6 +61,7 @@ import io.github.muntashirakon.AppManager.compat.IntegerCompat;
 import io.github.muntashirakon.AppManager.compat.ManifestCompat;
 import io.github.muntashirakon.AppManager.compat.PackageManagerCompat;
 import io.github.muntashirakon.AppManager.crypto.auth.AuthManager;
+import io.github.muntashirakon.AppManager.ipc.LocalServices;
 import io.github.muntashirakon.AppManager.logs.Log;
 import io.github.muntashirakon.AppManager.runner.RunnerUtils;
 import io.github.muntashirakon.AppManager.self.SelfPermissions;
@@ -293,6 +294,8 @@ public class ActivityInterceptor extends BaseActivity {
     private ComponentName mRequestedComponent;
 
     private boolean mUseRoot;
+    @Nullable
+    private MaterialCheckBox mUseRootCheckBox;
     private int mUserHandle;
 
     @Nullable
@@ -579,15 +582,16 @@ public class ActivityInterceptor extends BaseActivity {
         mUserIdEdit.setEnabled(SelfPermissions.checkSelfOrRemotePermission(ManifestCompat.permission.INTERACT_ACROSS_USERS)
                 || SelfPermissions.checkSelfOrRemotePermission(ManifestCompat.permission.INTERACT_ACROSS_USERS_FULL));
         // Setup root
-        MaterialCheckBox useRootCheckBox = findViewById(R.id.use_root);
-        useRootCheckBox.setChecked(mUseRoot);
-        useRootCheckBox.setVisibility(Ops.isWorkingUidRoot() ? View.VISIBLE : View.GONE);
-        useRootCheckBox.setOnCheckedChangeListener((buttonView, isChecked) -> {
+        mUseRootCheckBox = findViewById(R.id.use_root);
+        mUseRootCheckBox.setChecked(mUseRoot);
+        updateUseRootVisibility();
+        mUseRootCheckBox.setOnCheckedChangeListener((buttonView, isChecked) -> {
             if (mUseRoot != isChecked) {
                 mUseRoot = isChecked;
                 refreshUI();
             }
         });
+        LocalServices.state().observe(this, ignored -> updateUseRootVisibility());
         // Setup identifier
         TextInputLayout idLayout = findViewById(R.id.type_id_layout);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -704,6 +708,12 @@ public class ActivityInterceptor extends BaseActivity {
             mAreTextWatchersActive = true;
             refreshUI();
         });
+    }
+
+    private void updateUseRootVisibility() {
+        if (mUseRootCheckBox != null) {
+            mUseRootCheckBox.setVisibility(Ops.isWorkingUidRoot() ? View.VISIBLE : View.GONE);
+        }
     }
 
     private void setupTextWatchers() {

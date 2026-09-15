@@ -9,6 +9,8 @@ import androidx.annotation.AnyThread;
 import androidx.annotation.MainThread;
 import androidx.annotation.NonNull;
 import androidx.annotation.WorkerThread;
+import androidx.lifecycle.LiveData;
+import androidx.lifecycle.MutableLiveData;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -23,15 +25,25 @@ import io.github.muntashirakon.io.FileSystemManager;
 
 public class LocalServices {
     private static final Object sBindLock = new Object();
+    private static final MutableLiveData<Boolean> sState = new MutableLiveData<>(false);
+
+    @NonNull
+    public static LiveData<Boolean> state() {
+        return sState;
+    }
 
     @NonNull
     private static final ServiceConnectionWrapper sFileSystemServiceConnectionWrapper
-            = new ServiceConnectionWrapper(BuildConfig.APPLICATION_ID, FileSystemService.class.getName());
+            = new ServiceConnectionWrapper(BuildConfig.APPLICATION_ID, FileSystemService.class.getName(),
+            LocalServices::onServiceBinderDied);
 
     @WorkerThread
     public static void bindServicesIfNotAlready() throws RemoteException {
-        if (!alive()) {
-            bindServices();
+        // Must be one atomic operation.
+        synchronized (sBindLock) {
+            if (!alive()) {
+                bindServices();
+            }
         }
     }
 
@@ -39,36 +51,39 @@ public class LocalServices {
     public static void bindServices() throws RemoteException {
         synchronized (sBindLock) {
             unbindServicesIfRunning();
-            bindAmService();
-            bindFileSystemManager();
-            // Verify binding
-            if (!getAmService().asBinder().pingBinder()) {
-                throw new RemoteException("IAmService not running.");
+            try {
+                bindAmService();
+                bindFileSystemManager();
+                // Verify both binders before publishing the capability.
+                if (!getAmService().asBinder().pingBinder()
+                        || !sFileSystemServiceConnectionWrapper.isBinderActive()) {
+                    throw new RemoteException("Required service binder is not running.");
+                }
+                // Update UID only after both services are valid.
+                Ops.setWorkingUid(getAmService().getUid());
+                // A reconnect can follow a phone restart that cleared volatile firewall rules.
+                PermissionOverrideManager.reconcileAll();
+                sState.postValue(true);
+            } catch (RemoteException | RuntimeException e) {
+                stopServices();
+                throw e;
             }
-            getFileSystemManager();
-            // Update UID
-            Ops.setWorkingUid(getAmService().getUid());
-            // A reconnect can follow a phone restart that cleared volatile firewall rules.
-            PermissionOverrideManager.reconcileAll();
         }
     }
 
     public static boolean alive() {
-        synchronized (sAMServiceConnectionWrapper) {
-            return sAMServiceConnectionWrapper.isBinderActive();
-        }
+        return sAMServiceConnectionWrapper.isBinderActive()
+                && sFileSystemServiceConnectionWrapper.isBinderActive();
+    }
+
+    private static void onServiceBinderDied() {
+        ThreadUtils.postOnBackgroundThread(LocalServices::stopServices);
     }
 
     @WorkerThread
     @NoOps(used = true)
     private static void bindFileSystemManager() throws RemoteException {
-        synchronized (sFileSystemServiceConnectionWrapper) {
-            try {
-                sFileSystemServiceConnectionWrapper.bindService();
-            } finally {
-                sFileSystemServiceConnectionWrapper.notifyAll();
-            }
-        }
+        sFileSystemServiceConnectionWrapper.bindService();
     }
 
     @AnyThread
@@ -86,18 +101,13 @@ public class LocalServices {
 
     @NonNull
     private static final ServiceConnectionWrapper sAMServiceConnectionWrapper
-            = new ServiceConnectionWrapper(BuildConfig.APPLICATION_ID, AMService.class.getName());
+            = new ServiceConnectionWrapper(BuildConfig.APPLICATION_ID, AMService.class.getName(),
+            LocalServices::onServiceBinderDied);
 
     @WorkerThread
     @NoOps(used = true)
     private static void bindAmService() throws RemoteException {
-        synchronized (sAMServiceConnectionWrapper) {
-            try {
-                sAMServiceConnectionWrapper.bindService();
-            } finally {
-                sAMServiceConnectionWrapper.notifyAll();
-            }
-        }
+        sAMServiceConnectionWrapper.bindService();
     }
 
     @AnyThread
@@ -123,6 +133,8 @@ public class LocalServices {
             sFileSystemServiceConnectionWrapper.stopDaemon();
         }
         Ops.setWorkingUid(Process.myUid());
+        Ops.invalidateRuntimeBackend();
+        sState.postValue(false);
     }
 
     @MainThread
@@ -134,6 +146,8 @@ public class LocalServices {
             sFileSystemServiceConnectionWrapper.unbindService();
         }
         Ops.setWorkingUid(Process.myUid());
+        Ops.invalidateRuntimeBackend();
+        sState.postValue(false);
     }
 
     @WorkerThread

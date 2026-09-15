@@ -5,7 +5,6 @@ package io.github.muntashirakon.AppManager.servermanager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.os.Process;
 import android.os.RemoteException;
 import android.os.SystemClock;
 
@@ -48,7 +47,17 @@ public class ServerStatusChangeReceiver extends BroadcastReceiver {
             return;
         }
         Log.d(TAG, "onReceive --> %s %s", action, uidString);
-        int uid = Integer.parseInt(uidString);
+        final int uid;
+        try {
+            uid = Integer.parseInt(uidString);
+            if (uid < 0) {
+                Log.w(TAG, "Invalid UID received from the server: %s", uidString);
+                return;
+            }
+        } catch (NumberFormatException e) {
+            Log.w(TAG, "Malformed UID received from the server: %s", uidString);
+            return;
+        }
 
         switch (action) {
             case ServerActions.ACTION_SERVER_STARTED:
@@ -60,8 +69,7 @@ public class ServerStatusChangeReceiver extends BroadcastReceiver {
             case ServerActions.ACTION_SERVER_STOPPED:
                 // Server was stopped
                 sServerStartGeneration.incrementAndGet();
-                LocalServer.die();
-                Ops.setWorkingUid(Process.myUid());
+                stopServerAndServices();
                 break;
             case ServerActions.ACTION_SERVER_CONNECTED:
                 // Server was connected with App Manager
@@ -70,9 +78,16 @@ public class ServerStatusChangeReceiver extends BroadcastReceiver {
             case ServerActions.ACTION_SERVER_DISCONNECTED:
                 // Exited from App Manager
                 sServerStartGeneration.incrementAndGet();
-                Ops.setWorkingUid(Process.myUid());
+                stopServerAndServices();
                 break;
         }
+    }
+
+    private static void stopServerAndServices() {
+        ThreadUtils.postOnBackgroundThread(() -> {
+            LocalServer.die();
+            LocalServices.stopServices();
+        });
     }
 
     @AnyThread
@@ -81,7 +96,7 @@ public class ServerStatusChangeReceiver extends BroadcastReceiver {
         ThreadUtils.postOnBackgroundThread(() -> {
             try {
                 long waitStarted = SystemClock.elapsedRealtime();
-                while (!LocalServer.alive(context)) {
+                while (!LocalServer.checkServerHealth(context)) {
                     if (generation != sServerStartGeneration.get()
                             || Thread.currentThread().isInterrupted()) {
                         return;
@@ -94,7 +109,16 @@ public class ServerStatusChangeReceiver extends BroadcastReceiver {
                     Log.w(TAG, "Waiting for server...");
                     SystemClock.sleep(100);
                 }
+                if (generation != sServerStartGeneration.get()
+                        || Thread.currentThread().isInterrupted()) {
+                    return;
+                }
                 LocalServer.getInstance();
+                if (generation != sServerStartGeneration.get()
+                        || Thread.currentThread().isInterrupted()) {
+                    LocalServer.die();
+                    return;
+                }
                 LocalServices.bindServicesIfNotAlready();
             } catch (IOException | AdbPairingRequiredException e) {
                 Log.w(TAG, "Failed to start server", e);
@@ -106,5 +130,12 @@ public class ServerStatusChangeReceiver extends BroadcastReceiver {
 
     static boolean hasServerStartTimedOut(long waitStarted, long now) {
         return now - waitStarted >= SERVER_START_TIMEOUT_MILLIS;
+    }
+
+    /**
+     * Cancel callbacks started by older SERVER_STARTED broadcast.
+     */
+    public static void cancelPendingServerStart() {
+        sServerStartGeneration.incrementAndGet();
     }
 }

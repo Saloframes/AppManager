@@ -123,12 +123,22 @@ public class WifiWaitService extends Service {
 
         mLastStartId = startId;
 
-        if (!isWirelessAdbMode() || LocalServer.alive(getApplicationContext())) {
+        if (!isWirelessAdbMode()) {
             finishService();
             return START_NOT_STICKY;
         }
 
-        registerNetworkCallback();
+        ThreadUtils.postOnBackgroundThread(() -> {
+            boolean serverHealthy = LocalServer.checkServerHealth(getApplicationContext());
+            mHandler.post(() -> {
+                if (mDestroyed) return;
+                if (!isWirelessAdbMode() || serverHealthy) {
+                    finishService();
+                } else {
+                    registerNetworkCallback();
+                }
+            });
+        });
 
         return START_NOT_STICKY; // Don't restart if killed
     }

@@ -152,13 +152,15 @@ public class AppDetailsPermissionsFragment extends AppDetailsFragment {
     public void onCreateMenu(@NonNull Menu menu, @NonNull MenuInflater inflater) {
         switch (mNeededProperty) {
             case APP_OPS:
-                inflater.inflate(R.menu.fragment_app_details_app_ops_actions, menu);
+                if (viewModel != null && !viewModel.isExternalApk()) {
+                    inflater.inflate(R.menu.fragment_app_details_app_ops_actions, menu);
+                }
                 break;
             case USES_PERMISSIONS:
                 if (viewModel != null && !viewModel.isExternalApk()) {
                     inflater.inflate(R.menu.fragment_app_details_permissions_actions, menu);
-                    break;
-                } // else fallthrough
+                } else inflater.inflate(R.menu.fragment_app_details_refresh_actions, menu);
+                break;
             case PERMISSIONS:
                 inflater.inflate(R.menu.fragment_app_details_refresh_actions, menu);
                 break;

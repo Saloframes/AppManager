@@ -35,6 +35,7 @@ import io.github.muntashirakon.AppManager.batchops.BatchOpsManager;
 import io.github.muntashirakon.AppManager.batchops.BatchOpsService;
 import io.github.muntashirakon.AppManager.batchops.BatchQueueItem;
 import io.github.muntashirakon.AppManager.compat.ManifestCompat;
+import io.github.muntashirakon.AppManager.ipc.LocalServices;
 import io.github.muntashirakon.AppManager.logcat.LogViewerActivity;
 import io.github.muntashirakon.AppManager.logcat.struct.SearchCriteria;
 import io.github.muntashirakon.AppManager.misc.SearchViewDebouncer;
@@ -208,6 +209,10 @@ public class RunningAppsActivity extends BaseActivity implements MultiSelectionV
                 UIUtils.displayShortToast(R.string.vt_queued);
             }
             // TODO: 7/1/22 Use a separate fragment
+        });
+        LocalServices.state().observe(this, ignored -> {
+            refresh();
+            invalidateOptionsMenu();
         });
         model.getVtFileReport().observe(this, processItemVtFileReportPair -> {
             ProcessItem processItem = processItemVtFileReportPair.first;

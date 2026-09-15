@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.muntashirakon.AppManager.R;
 import io.github.muntashirakon.AppManager.apk.signing.Signer;
@@ -64,6 +65,7 @@ public class MainPreferencesViewModel extends AndroidViewModel implements Ops.Ad
     private final MutableLiveData<String> mSigningKeySha256HashLiveData = new SingleLiveEvent<>();
     private final MutableLiveData<List<Pair<String, CharSequence>>> mPackageNameLabelPairLiveData = new SingleLiveEvent<>();
     private final ExecutorService mExecutor = Executors.newFixedThreadPool(1);
+    private final AtomicBoolean mModeOperationPending = new AtomicBoolean(false);
 
     public MainPreferencesViewModel(@NonNull Application application) {
         super(application);
@@ -136,6 +138,10 @@ public class MainPreferencesViewModel extends AndroidViewModel implements Ops.Ad
 
     public LiveData<Integer> getModeOfOpsStatus() {
         return mModeOfOpsStatus;
+    }
+
+    public boolean isModeOperationPending() {
+        return mModeOperationPending.get();
     }
 
     public void setModeOfOps() {
@@ -261,6 +267,10 @@ public class MainPreferencesViewModel extends AndroidViewModel implements Ops.Ad
     }
 
     private void submitModeOperation(@NonNull ModeOperation operation) {
+        if (!mModeOperationPending.compareAndSet(false, true)) {
+            // Already running
+            return;
+        }
         try {
             mExecutor.execute(() -> {
                 int status;
@@ -271,9 +281,16 @@ public class MainPreferencesViewModel extends AndroidViewModel implements Ops.Ad
                     Ops.fallbackToNoRoot(getApplication());
                     status = Ops.STATUS_FAILURE;
                 }
-                mModeOfOpsStatus.postValue(status);
+                int finalStatus = status;
+                ThreadUtils.postOnMainThread(() -> {
+                    // Need to use setValue() because the guard needs to be updated as soon as the
+                    // status is passed to the UI.
+                    mModeOperationPending.set(false);
+                    mModeOfOpsStatus.setValue(finalStatus);
+                });
             });
         } catch (RejectedExecutionException e) {
+            mModeOperationPending.set(false);
             mModeOfOpsStatus.postValue(Ops.STATUS_FAILURE);
         }
     }
