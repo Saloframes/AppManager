@@ -5,7 +5,6 @@ package io.github.muntashirakon.AppManager.viewer.pdf;
 import android.app.Service;
 import android.content.Intent;
 import android.graphics.Bitmap;
-import android.graphics.pdf.PdfRenderer;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
@@ -14,31 +13,30 @@ import androidx.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public class PdfRenderService extends Service {
-    private static final int MAX_PAGE_COUNT = 10_000;
-    private static final int MAX_BITMAP_DIMENSION = 4096;
-    private static final long MAX_BITMAP_PIXELS = 16L * 1024L * 1024L;
-
     private final Object mRendererLock = new Object();
     private final ExecutorService mRenderExecutor = Executors.newSingleThreadExecutor();
+    private final List<Future<?>> mRenderTasks = new ArrayList<>();
     @Nullable
-    private PdfRenderer mRenderer;
+    private PdfRenderBackend mRenderer;
 
     private final IPdfRenderService.Stub mBinder = new IPdfRenderService.Stub() {
         @Override
-        public void openDocument(ParcelFileDescriptor fileDescriptor) throws RemoteException {
-            if (fileDescriptor == null) throw new RemoteException("Missing PDF file descriptor");
+        public void openDocument(ParcelFileDescriptor fileDescriptor, String password) throws RemoteException {
+            if (fileDescriptor == null) {
+                throw new RemoteException("Missing PDF file descriptor");
+            }
             synchronized (mRendererLock) {
                 closeRendererLocked();
                 try {
-                    PdfRenderer renderer = new PdfRenderer(fileDescriptor);
-                    if (renderer.getPageCount() > MAX_PAGE_COUNT) {
-                        renderer.close();
-                        throw new IOException("PDF contains too many pages");
-                    }
+                    PdfRenderBackend renderer = PdfRenderBackendFactory.create();
+                    renderer.open(fileDescriptor, password);
                     mRenderer = renderer;
                 } catch (IOException | RuntimeException e) {
                     try {
@@ -59,16 +57,93 @@ public class PdfRenderService extends Service {
         }
 
         @Override
+        public String getBackendName() throws RemoteException {
+            synchronized (mRendererLock) {
+                if (mRenderer == null) {
+                    throw new RemoteException("PDF renderer is closed");
+                }
+                return mRenderer.getBackendName();
+            }
+        }
+
+        @Override
+        public int getCapabilities() throws RemoteException {
+            synchronized (mRendererLock) {
+                if (mRenderer == null) {
+                    throw new RemoteException("PDF renderer is closed");
+                }
+                return mRenderer.getCapabilities();
+            }
+        }
+
+        @Override
+        public int getDocumentLinearizationType() throws RemoteException {
+            synchronized (mRendererLock) {
+                if (mRenderer == null) {
+                    throw new RemoteException("PDF renderer is closed");
+                }
+                return mRenderer.getDocumentLinearizationType();
+            }
+        }
+
+        @Override
+        public int getPdfFormType() throws RemoteException {
+            synchronized (mRendererLock) {
+                if (mRenderer == null) {
+                    throw new RemoteException("PDF renderer is closed");
+                }
+                return mRenderer.getPdfFormType();
+            }
+        }
+
+        @Override
+        public boolean shouldScaleForPrinting() throws RemoteException {
+            synchronized (mRendererLock) {
+                if (mRenderer == null) {
+                    throw new RemoteException("PDF renderer is closed");
+                }
+                return mRenderer.shouldScaleForPrinting();
+            }
+        }
+
+        @Override
+        public int[] getPageDimensions(int pageIndex) throws RemoteException {
+            synchronized (mRendererLock) {
+                if (mRenderer == null) {
+                    throw new RemoteException("PDF renderer is closed");
+                }
+                if (pageIndex < 0 || pageIndex >= mRenderer.getPageCount()) {
+                    throw new RemoteException("Invalid PDF page");
+                }
+                try {
+                    return mRenderer.getPageDimensions(pageIndex);
+                } catch (RuntimeException e) {
+                    throw remoteException(e);
+                }
+            }
+        }
+
+        @Override
         public ParcelFileDescriptor renderPage(int pageIndex, int targetWidth) throws RemoteException {
+            return renderPageWithOptions(pageIndex, targetWidth, IPdfRenderService.RENDER_MODE_DISPLAY, 0);
+        }
+
+        @Override
+        public ParcelFileDescriptor renderPageWithOptions(int pageIndex, int targetWidth,
+                                                          int renderMode, int renderFlags) throws RemoteException {
             final ParcelFileDescriptor[] pipe;
             synchronized (mRendererLock) {
-                if (mRenderer == null) throw new RemoteException("PDF renderer is closed");
+                if (mRenderer == null) {
+                    throw new RemoteException("PDF renderer is closed");
+                }
                 if (pageIndex < 0 || pageIndex >= mRenderer.getPageCount()) {
                     throw new RemoteException("Invalid PDF page");
                 }
                 try {
                     pipe = ParcelFileDescriptor.createPipe();
-                    mRenderExecutor.execute(() -> renderPageToPipe(pageIndex, targetWidth, pipe[1]));
+                    Future<?> task = mRenderExecutor.submit(() ->
+                            renderPageToPipe(pageIndex, targetWidth, renderMode, renderFlags, pipe[1]));
+                    mRenderTasks.add(task);
                 } catch (IOException | RuntimeException e) {
                     throw remoteException(e);
                 }
@@ -77,8 +152,27 @@ public class PdfRenderService extends Service {
         }
 
         @Override
+        public void writeDocument(ParcelFileDescriptor destination, boolean removePasswordProtection)
+                throws RemoteException {
+            if (destination == null) {
+                throw new RemoteException("Missing PDF destination");
+            }
+            synchronized (mRendererLock) {
+                if (mRenderer == null) {
+                    throw new RemoteException("PDF renderer is closed");
+                }
+                try {
+                    mRenderer.writeDocument(destination, removePasswordProtection);
+                } catch (IOException | RuntimeException e) {
+                    throw remoteException(e);
+                }
+            }
+        }
+
+        @Override
         public void closeDocument() {
             synchronized (mRendererLock) {
+                cancelRenderTasksLocked();
                 closeRendererLocked();
             }
         }
@@ -93,30 +187,22 @@ public class PdfRenderService extends Service {
     @Override
     public void onDestroy() {
         synchronized (mRendererLock) {
+            cancelRenderTasksLocked();
             closeRendererLocked();
         }
         mRenderExecutor.shutdownNow();
         super.onDestroy();
     }
 
-    private void renderPageToPipe(int pageIndex, int targetWidth, ParcelFileDescriptor writeEnd) {
+    private void renderPageToPipe(int pageIndex, int targetWidth, int renderMode, int renderFlags,
+                                  ParcelFileDescriptor writeEnd) {
         Bitmap bitmap = null;
         try (OutputStream output = new ParcelFileDescriptor.AutoCloseOutputStream(writeEnd)) {
             synchronized (mRendererLock) {
-                if (mRenderer == null) return;
-                try (PdfRenderer.Page page = mRenderer.openPage(pageIndex)) {
-                    int width = Math.max(1, Math.min(targetWidth, MAX_BITMAP_DIMENSION));
-                    int height = Math.max(1, Math.round(width * page.getHeight() / (float) page.getWidth()));
-                    if (height > MAX_BITMAP_DIMENSION || (long) width * height > MAX_BITMAP_PIXELS) {
-                        float scale = Math.min(MAX_BITMAP_DIMENSION / (float) width,
-                                (float) Math.sqrt(MAX_BITMAP_PIXELS / (double) width / height));
-                        width = Math.max(1, Math.round(width * scale));
-                        height = Math.max(1, Math.round(height * scale));
-                    }
-                    bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-                    bitmap.eraseColor(0xffffffff);
-                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+                if (mRenderer == null) {
+                    return;
                 }
+                bitmap = mRenderer.renderPage(pageIndex, targetWidth, renderMode, renderFlags);
             }
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, output);
         } catch (IOException | RuntimeException ignored) {
@@ -131,6 +217,11 @@ public class PdfRenderService extends Service {
             mRenderer.close();
             mRenderer = null;
         }
+    }
+
+    private void cancelRenderTasksLocked() {
+        for (Future<?> task : mRenderTasks) task.cancel(true);
+        mRenderTasks.clear();
     }
 
     private static RemoteException remoteException(Throwable throwable) {
