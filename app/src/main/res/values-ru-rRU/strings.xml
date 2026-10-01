@@ -437,7 +437,6 @@
     <string name="features">Функции</string>
     <string name="whats_new">Что нового</string>
     <string name="blocking_rules">Правила блокировки</string>
-    <string name="cache">Кеш</string>
     <string name="external_data">Внешние данные</string>
     <string name="internal_data">Внутренние данные</string>
     <string name="data">Данные</string>
@@ -1101,9 +1100,7 @@
     <string name="keystore_password_info">Ниже приведен пароль хранилища ключей App Manager. Пожалуйста, храните его в надежном месте, если вы собираетесь делать резервное копирование/восстановление хранилища ключей App Manager. <b>Это сообщение не будет отображаться снова.</b></string>
     <string name="keystore_pass_cannot_be_empty">Пароль хранилища ключей не может быть пустым.</string>
     <string name="invalid_password">Неправильный пароль, попробуйте ещё раз.</string>
-    <string name="adb_wifi_paring_code">Код подключения Wi-Fi</string>
     <string name="adb_pair">Подключить</string>
-    <string name="port_number_pairing_code_empty">Номер порта или код подключения пуст.</string>
     <string name="paired_successfully">Подключено.</string>
     <string name="identifier">Идентификатор</string>
     <string name="set_package_name_first">Сначала установите имя пакета!</string>
@@ -1409,7 +1406,6 @@
     <string name="debloat_list_carrier">Оператор связи/интернет-провайдер</string>
     <string name="debloat_list_google">Google</string>
     <string name="debloat_list_misc">Разное</string>
-    <string name="debloat_list_pending">На рассмотрении</string>
     <string name="debloat_removal_safe">Безопасно</string>
     <string name="debloat_removal_replace">Замена</string>
     <string name="debloat_removal_caution">Осторожно</string>
@@ -1512,16 +1508,11 @@
     <string name="pref_enable_auto_lock_msg">Блокировка App Manager\'а при заблокированном устройстве.</string>
     <string name="path_does_not_exist">“%1$s” не существует</string>
     <string name="path_not_a_folder">“%1$s” не является папкой</string>
-    <string name="scan_report_from_pithus">Отчет Pithus</string>
-    <string name="action_checking">Проверка…</string>
-    <string name="report_not_available">Не доступно</string>
     <string name="profile_modified_are_you_sure">Профиль был изменен. Отменить все изменения и выйти\?</string>
     <string name="apply_profile">Применить профиль “%1$s”</string>
     <string name="choose_a_profile_state">Выберите состояние профиля</string>
     <string name="profile_id">ID профиля</string>
     <string name="copy_profile_id">Копировать ID профиля</string>
-    <string name="launch_activity_dialog_title">Запуск Активити: Требуется Действие</string>
-    <string name="launch_activity_dialog_message">App Manager пытается запустить активити с помощью <b>Search assistant</b> (обычно Google Assistant), но не может этого сделать из-за недостаточных разрешений. Чтобы запустить активити, активируйте  <b>Search assistant</b> вручную (обычно это делается долгим нажатием кнопки Home). Нажмите на кнопку <b>Close</b> после завершения запуска активити, чтобы вернуться к оригинальному ассистенту.</string>
     <string name="finder_title">Поисковик</string>
     <string name="select_filter">Выберите фильтр</string>
     <string name="size_in_bytes">Размер (в байтах)</string>
@@ -1565,7 +1556,6 @@
     <string name="adb_pairing_code_invalid">Код сопряжения должен состоять из шести цифр.</string>
     <string name="mode_of_op_custom_command_title">Пользовательская команда</string>
     <string name="mode_of_op_custom_command">Если нет возможности использовать ни один из режимов, можете выполнить эту команду в любом Shell\'е, чтобы запустить App Manager в привилегированном режиме:</string>
-    <string name="mode_of_op_alternative_custom_command">Если будет ошибка “permission denied”, то вместо команды выше выполните эту команду:</string>
     <string name="sensors">Сенсоры</string>
     <string name="tag_sensors_disabled">Сенсоры отключены</string>
     <string name="pref_use_system_font">Системный шрифт</string>
